@@ -222,6 +222,29 @@
         // Redraw on resize to keep canvas matched to viewport.
         window.addEventListener('resize', resizeCanvasToDisplaySize);
 
+        // Keyboard controls: send one move message per keydown (including auto-repeat)
+        const KEY_TO_DIRECTION = {
+          ArrowUp: 'up',
+          ArrowDown: 'down',
+          ArrowLeft: 'left',
+          ArrowRight: 'right'
+        };
+
+        function sendMove(direction) {
+          if (!direction) return;
+          const ws = state.ws;
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ action: 'move', direction }));
+          }
+        }
+
+        window.addEventListener('keydown', (event) => {
+          const direction = KEY_TO_DIRECTION[event.key];
+          if (!direction) return;
+          event.preventDefault();
+          sendMove(direction);
+        });
+
         // Initialize
         resizeCanvasToDisplaySize();
         connect();
