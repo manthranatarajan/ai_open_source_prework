@@ -14,8 +14,24 @@
       (function() {
         const canvas = document.getElementById('world-canvas');
         const ctx = canvas.getContext('2d', { alpha: false });
+        const WS_URL = 'wss://codepath-mmorg.onrender.com';
 
-        // Size the canvas to fill the window (CSS pixels -> device pixels for crispness)
+        const state = {
+          ws: null,
+          playerId: null,
+          players: {},
+          avatars: {},
+          avatarBitmaps: {}, // avatarName -> { north: ImageBitmap[], south: ImageBitmap[], east: ImageBitmap[] }
+          world: {
+            image: null,
+            width: 0,
+            height: 0
+          }
+        };
+
+        let needsRender = false;
+
+        // Size the canvas to fill the window (CSS pixels)
         function resizeCanvasToDisplaySize() {
           const displayWidth = Math.floor(window.innerWidth);
           const displayHeight = Math.floor(window.innerHeight);
@@ -23,36 +39,192 @@
             canvas.width = displayWidth;
             canvas.height = displayHeight;
           }
-          // Ensure the canvas element visually fills the window
           canvas.style.width = '100vw';
           canvas.style.height = '100vh';
-          ctx.imageSmoothingEnabled = false; // Keep pixel-perfect rendering when we draw
+          ctx.imageSmoothingEnabled = false;
+          requestRender();
         }
 
         const worldImage = new Image();
         worldImage.src = 'world.jpg';
         worldImage.decoding = 'async';
         worldImage.addEventListener('load', () => {
-          draw();
+          state.world.image = worldImage;
+          state.world.width = worldImage.naturalWidth;
+          state.world.height = worldImage.naturalHeight;
+          requestRender();
         });
 
         function clear() {
           ctx.clearRect(0, 0, canvas.width, canvas.height);
         }
 
-        // Draw the world image at its natural size with no scaling, showing the upper-left of the map.
-        function draw() {
-          resizeCanvasToDisplaySize();
+        function requestRender() {
+          if (needsRender) return;
+          needsRender = true;
+          requestAnimationFrame(() => {
+            needsRender = false;
+            render();
+          });
+        }
+
+        function connect() {
+          const ws = new WebSocket(WS_URL);
+          state.ws = ws;
+          ws.addEventListener('open', () => {
+            ws.send(JSON.stringify({ action: 'join_game', username: 'Tim' }));
+          });
+          ws.addEventListener('message', onMessage);
+        }
+
+        async function onMessage(event) {
+          let data;
+          try {
+            data = JSON.parse(event.data);
+          } catch (e) {
+            return;
+          }
+          if (data.action === 'join_game' && data.success) {
+            state.playerId = data.playerId;
+            state.players = data.players || {};
+            state.avatars = data.avatars || {};
+            const me = state.players[state.playerId];
+            if (me && me.avatar && state.avatars[me.avatar]) {
+              await ensureAvatarBitmaps(me.avatar, state.avatars[me.avatar]);
+            }
+            requestRender();
+          } else if (data.action === 'players_moved' && data.players) {
+            // Update my position if included; ignore others for this milestone
+            const me = data.players[state.playerId];
+            if (me) {
+              state.players[state.playerId] = { ...state.players[state.playerId], ...me };
+              requestRender();
+            }
+          }
+        }
+
+        async function ensureAvatarBitmaps(avatarName, avatarDef) {
+          if (state.avatarBitmaps[avatarName]) return state.avatarBitmaps[avatarName];
+          const result = { north: [], south: [], east: [] };
+          const dirs = ['north', 'south', 'east'];
+          for (const dir of dirs) {
+            const frames = (avatarDef.frames && avatarDef.frames[dir]) || [];
+            const bitmaps = await Promise.all(frames.map(decodeToBitmap));
+            result[dir] = bitmaps.filter(Boolean);
+          }
+          state.avatarBitmaps[avatarName] = result;
+          return result;
+        }
+
+        async function decodeToBitmap(dataUrl) {
+          try {
+            const res = await fetch(dataUrl);
+            const blob = await res.blob();
+            const bmp = await createImageBitmap(blob);
+            return bmp;
+          } catch (e) {
+            return null;
+          }
+        }
+
+        function computeCamera() {
+          const me = state.players[state.playerId];
+          const worldW = state.world.width || 0;
+          const worldH = state.world.height || 0;
+          const viewW = canvas.width;
+          const viewH = canvas.height;
+          if (!me || !worldW || !worldH || !viewW || !viewH) {
+            return { x: 0, y: 0 };
+          }
+          const desiredX = Math.round(me.x - viewW / 2);
+          const desiredY = Math.round(me.y - viewH / 2);
+          const maxX = Math.max(0, worldW - viewW);
+          const maxY = Math.max(0, worldH - viewH);
+          const camX = Math.max(0, Math.min(maxX, desiredX));
+          const camY = Math.max(0, Math.min(maxY, desiredY));
+          return { x: camX, y: camY };
+        }
+
+        function drawWorld(camera) {
+          if (!state.world.image) return;
+          const sx = camera.x;
+          const sy = camera.y;
+          const sWidth = Math.min(canvas.width, state.world.width - sx);
+          const sHeight = Math.min(canvas.height, state.world.height - sy);
           clear();
-          // Draw starting at (0,0) so world coordinates align with the canvas origin.
-          ctx.drawImage(worldImage, 0, 0);
+          ctx.drawImage(state.world.image, sx, sy, sWidth, sHeight, 0, 0, sWidth, sHeight);
+        }
+
+        function drawMe(camera) {
+          const me = state.players[state.playerId];
+          if (!me || !me.avatar) return;
+          const atlas = state.avatarBitmaps[me.avatar];
+          if (!atlas) return;
+          let facing = me.facing || 'south';
+          let frames = atlas[facing];
+          let flippedWest = false;
+          if (!frames || frames.length === 0) {
+            if (facing === 'west') {
+              frames = atlas['east'];
+              flippedWest = true;
+            } else {
+              frames = atlas['south'] || [];
+            }
+          }
+          if (!frames || frames.length === 0) return;
+          const frameIndex = Math.max(0, (me.animationFrame || 0) % frames.length);
+          const bmp = frames[frameIndex];
+          if (!bmp) return;
+
+          const screenX = Math.round(me.x - camera.x);
+          const screenY = Math.round(me.y - camera.y);
+          const drawW = bmp.width;
+          const drawH = bmp.height;
+          const dx = Math.round(screenX - drawW / 2);
+          const dy = Math.round(screenY - drawH / 2);
+
+          ctx.save();
+          if (facing === 'west' || flippedWest) {
+            ctx.translate(screenX, 0);
+            ctx.scale(-1, 1);
+            ctx.drawImage(bmp, -Math.round(drawW / 2), dy);
+          } else {
+            ctx.drawImage(bmp, dx, dy);
+          }
+          ctx.restore();
+
+          drawLabel(me.username || 'Tim', screenX, dy - 6);
+        }
+
+        function drawLabel(text, centerX, bottomY) {
+          const paddingX = 6;
+          const paddingY = 3;
+          ctx.font = '14px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          const metrics = ctx.measureText(text);
+          const labelW = Math.ceil(metrics.width) + paddingX * 2;
+          const labelH = 16 + paddingY * 2;
+          const x = Math.round(centerX - labelW / 2);
+          const y = Math.round(bottomY - labelH);
+          ctx.fillStyle = 'rgba(0,0,0,0.6)';
+          ctx.fillRect(x, y, labelW, labelH);
+          ctx.fillStyle = '#fff';
+          ctx.fillText(text, Math.round(centerX), Math.round(bottomY - paddingY));
+        }
+
+        function render() {
+          const camera = computeCamera();
+          drawWorld(camera);
+          drawMe(camera);
         }
 
         // Redraw on resize to keep canvas matched to viewport.
-        window.addEventListener('resize', draw);
+        window.addEventListener('resize', resizeCanvasToDisplaySize);
 
-        // Kick off initial sizing; draw will run after image load as well.
+        // Initialize
         resizeCanvasToDisplaySize();
+        connect();
       })();
     </script>
   </body>
