@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>MMO Client</title>
+    <link rel="preload" as="image" href="/world.jpg">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <canvas id="world-canvas"></canvas>
+
+    <script>
+      (function() {
+        const canvas = document.getElementById('world-canvas');
+        const ctx = canvas.getContext('2d', { alpha: false });
+
+        // Size the canvas to fill the window (CSS pixels -> device pixels for crispness)
+        function resizeCanvasToDisplaySize() {
+          const dpr = window.devicePixelRatio || 1;
+          const displayWidth = Math.floor(window.innerWidth * dpr);
+          const displayHeight = Math.floor(window.innerHeight * dpr);
+          if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
+            canvas.width = displayWidth;
+            canvas.height = displayHeight;
+          }
+          // Ensure the canvas element visually fills the window
+          canvas.style.width = '100vw';
+          canvas.style.height = '100vh';
+          ctx.imageSmoothingEnabled = false; // Keep pixel-perfect rendering when we draw
+        }
+
+        const worldImage = new Image();
+        worldImage.src = '/world.jpg';
+        worldImage.decoding = 'async';
+        worldImage.addEventListener('load', () => {
+          draw();
+        });
+
+        function clear() {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+
+        // Draw the world image at its natural size with no scaling, showing the upper-left of the map.
+        function draw() {
+          resizeCanvasToDisplaySize();
+          clear();
+          // Draw starting at (0,0) so world coordinates align with the canvas origin.
+          ctx.drawImage(worldImage, 0, 0);
+        }
+
+        // Redraw on resize to keep canvas matched to viewport.
+        window.addEventListener('resize', draw);
+
+        // Kick off initial sizing; draw will run after image load as well.
+        resizeCanvasToDisplaySize();
+      })();
+    </script>
+  </body>
+  </html>
+
