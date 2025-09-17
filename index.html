@@ -26,7 +26,8 @@
             image: null,
             width: 0,
             height: 0
-          }
+          },
+          destMarker: null // { x, y, t0, ttlMs }
         };
 
         let needsRender = false;
@@ -246,6 +247,40 @@
           ctx.fillText(text, Math.round(centerX), Math.round(bottomY - paddingY));
         }
 
+        function drawDestinationMarker(camera) {
+          const marker = state.destMarker;
+          if (!marker) return;
+          const now = performance.now();
+          const age = now - marker.t0;
+          const ttl = marker.ttlMs || 1000;
+          if (age >= ttl) {
+            state.destMarker = null;
+            return;
+          }
+          const alpha = 1 - age / ttl;
+          const pulse = 8 + Math.sin(age / 80) * 4;
+          const screenX = Math.round(marker.x - camera.x);
+          const screenY = Math.round(marker.y - camera.y);
+          ctx.save();
+          ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = '#ffd54f';
+          ctx.beginPath();
+          ctx.arc(screenX, screenY, pulse, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(screenX - pulse - 4, screenY);
+          ctx.lineTo(screenX - 2, screenY);
+          ctx.moveTo(screenX + 2, screenY);
+          ctx.lineTo(screenX + pulse + 4, screenY);
+          ctx.moveTo(screenX, screenY - pulse - 4);
+          ctx.lineTo(screenX, screenY - 2);
+          ctx.moveTo(screenX, screenY + 2);
+          ctx.lineTo(screenX, screenY + pulse + 4);
+          ctx.stroke();
+          ctx.restore();
+        }
+
         function render() {
           const camera = computeCamera();
           drawWorld(camera);
@@ -255,6 +290,10 @@
           for (const p of list) {
             drawPlayer(p, camera);
           }
+          // Draw destination marker on top
+          drawDestinationMarker(camera);
+          // Keep animating the marker while it fades
+          if (state.destMarker) requestRender();
         }
 
         // Redraw on resize to keep canvas matched to viewport.
@@ -276,11 +315,32 @@
           }
         }
 
+        function sendMoveTo(x, y) {
+          if (typeof x !== 'number' || typeof y !== 'number') return;
+          const ws = state.ws;
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ action: 'move', x: Math.round(x), y: Math.round(y) }));
+          }
+        }
+
         window.addEventListener('keydown', (event) => {
           const direction = KEY_TO_DIRECTION[event.key];
           if (!direction) return;
           event.preventDefault();
           sendMove(direction);
+        });
+
+        // Click-to-move: translate screen coords to world coords and send
+        canvas.addEventListener('click', (event) => {
+          const rect = canvas.getBoundingClientRect();
+          const clickX = Math.round(event.clientX - rect.left);
+          const clickY = Math.round(event.clientY - rect.top);
+          const camera = computeCamera();
+          const worldX = (camera.x || 0) + clickX;
+          const worldY = (camera.y || 0) + clickY;
+          state.destMarker = { x: worldX, y: worldY, t0: performance.now(), ttlMs: 1000 };
+          sendMoveTo(worldX, worldY);
+          requestRender();
         });
 
         // Initialize
