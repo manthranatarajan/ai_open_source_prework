@@ -88,18 +88,36 @@
             state.playerId = data.playerId;
             state.players = data.players || {};
             state.avatars = data.avatars || {};
-            const me = state.players[state.playerId];
-            if (me && me.avatar && state.avatars[me.avatar]) {
-              await ensureAvatarBitmaps(me.avatar, state.avatars[me.avatar]);
+            // Ensure avatars for any players we know about
+            const avatarEnsures = [];
+            for (const pid in state.players) {
+              const p = state.players[pid];
+              if (p && p.avatar && state.avatars[p.avatar]) {
+                avatarEnsures.push(ensureAvatarBitmaps(p.avatar, state.avatars[p.avatar]));
+              }
             }
+            if (avatarEnsures.length) await Promise.all(avatarEnsures);
             requestRender();
           } else if (data.action === 'players_moved' && data.players) {
-            // Update my position if included; ignore others for this milestone
-            const me = data.players[state.playerId];
-            if (me) {
-              state.players[state.playerId] = { ...state.players[state.playerId], ...me };
-              requestRender();
+            // Merge movement updates for all players
+            for (const pid in data.players) {
+              const update = data.players[pid];
+              if (!update) continue;
+              const existing = state.players[pid] || { id: pid };
+              state.players[pid] = { ...existing, ...update };
             }
+            requestRender();
+          } else if (data.action === 'player_joined' && data.player) {
+            const p = data.player;
+            state.players[p.id] = p;
+            if (data.avatar && data.avatar.name) {
+              state.avatars[data.avatar.name] = data.avatar;
+              await ensureAvatarBitmaps(data.avatar.name, data.avatar);
+            }
+            requestRender();
+          } else if (data.action === 'player_left' && data.playerId) {
+            delete state.players[data.playerId];
+            requestRender();
           }
         }
 
@@ -114,6 +132,18 @@
           }
           state.avatarBitmaps[avatarName] = result;
           return result;
+        }
+
+        // Ensure we have bitmaps for a player's avatar when drawing
+        async function ensurePlayerAvatarLoaded(player) {
+          if (!player || !player.avatar) return;
+          const avatarName = player.avatar;
+          if (state.avatarBitmaps[avatarName]) return;
+          const def = state.avatars[avatarName];
+          if (def) {
+            await ensureAvatarBitmaps(avatarName, def);
+            requestRender();
+          }
         }
 
         async function decodeToBitmap(dataUrl) {
@@ -155,12 +185,15 @@
           ctx.drawImage(state.world.image, sx, sy, sWidth, sHeight, 0, 0, sWidth, sHeight);
         }
 
-        function drawMe(camera) {
-          const me = state.players[state.playerId];
-          if (!me || !me.avatar) return;
-          const atlas = state.avatarBitmaps[me.avatar];
-          if (!atlas) return;
-          let facing = me.facing || 'south';
+        function drawPlayer(player, camera) {
+          if (!player || !player.avatar) return;
+          const atlas = state.avatarBitmaps[player.avatar];
+          if (!atlas) {
+            // Attempt lazy-load of this avatar, then re-render when ready
+            ensurePlayerAvatarLoaded(player);
+            return;
+          }
+          let facing = player.facing || 'south';
           let frames = atlas[facing];
           let flippedWest = false;
           if (!frames || frames.length === 0) {
@@ -172,12 +205,12 @@
             }
           }
           if (!frames || frames.length === 0) return;
-          const frameIndex = Math.max(0, (me.animationFrame || 0) % frames.length);
+          const frameIndex = Math.max(0, (player.animationFrame || 0) % frames.length);
           const bmp = frames[frameIndex];
           if (!bmp) return;
 
-          const screenX = Math.round(me.x - camera.x);
-          const screenY = Math.round(me.y - camera.y);
+          const screenX = Math.round(player.x - camera.x);
+          const screenY = Math.round(player.y - camera.y);
           const drawW = bmp.width;
           const drawH = bmp.height;
           const dx = Math.round(screenX - drawW / 2);
@@ -193,7 +226,7 @@
           }
           ctx.restore();
 
-          drawLabel(me.username || 'Tim', screenX, dy - 6);
+          drawLabel(player.username || 'Player', screenX, dy - 6);
         }
 
         function drawLabel(text, centerX, bottomY) {
@@ -216,7 +249,12 @@
         function render() {
           const camera = computeCamera();
           drawWorld(camera);
-          drawMe(camera);
+          // Draw all players depth-sorted by y for simple occlusion
+          const list = Object.values(state.players || {});
+          list.sort((a, b) => (a.y || 0) - (b.y || 0));
+          for (const p of list) {
+            drawPlayer(p, camera);
+          }
         }
 
         // Redraw on resize to keep canvas matched to viewport.
